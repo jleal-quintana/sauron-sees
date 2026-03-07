@@ -41,6 +41,7 @@ Copy `config.example.toml` into your user config directory and adjust:
 - `go test ./...` passes
 - `GOOS=windows GOARCH=amd64 go build ./...` passes
 - Real runtime behavior still needs end-to-end validation on Windows with Codex and Granola configured locally
+- SSH push is configured to use the `github-work` host alias for this repository
 
 ## License
 
