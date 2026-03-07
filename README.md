@@ -42,6 +42,7 @@ Copy `config.example.toml` into your user config directory and adjust:
 - `GOOS=windows GOARCH=amd64 go build ./...` passes
 - Real runtime behavior still needs end-to-end validation on Windows with Codex and Granola configured locally
 - SSH push is configured to use the `github-work` host alias for this repository
+- Daily and weekly summaries are designed to be copied directly into Obsidian and manager updates
 
 ## License
 
