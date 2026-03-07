@@ -1,0 +1,26 @@
+timezone = "America/Argentina/Buenos_Aires"
+capture_interval_minutes = 5
+workdays = ["mon", "tue", "wed", "thu", "fri"]
+work_start = "09:00"
+work_end = "18:30"
+close_day_time = "18:30"
+
+temp_root = "%LOCALAPPDATA%\\SauronSees"
+daily_markdown_root = "%USERPROFILE%\\Documents\\Obsidian\\Work\\Daily"
+weekly_markdown_root = "%USERPROFILE%\\Documents\\Obsidian\\Work\\Weekly"
+
+codex_profile = "sauron-sees-eod"
+prompt_override_path = ""
+
+granola_enabled = true
+granola_mcp_server_name = "granola"
+
+weekly_auto_enabled = true
+weekly_close_day = "fri"
+weekly_close_time = "18:45"
+
+jpeg_quality = 70
+image_max_dimension = 1600
+delete_after_success = true
+daily_summary_min_words = 120
+weekly_summary_min_words = 180

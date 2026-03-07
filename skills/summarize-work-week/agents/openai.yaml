@@ -1,0 +1,4 @@
+interface:
+  display_name: "Summarize Work Week"
+  short_description: "Summarize daily work logs into a weekly update"
+  default_prompt: "Use $summarize-work-week to turn my daily work markdowns into a concise weekly manager update."
