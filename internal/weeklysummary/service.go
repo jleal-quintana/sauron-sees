@@ -12,6 +12,7 @@ import (
 	"text/template"
 	"time"
 
+	"sauron-sees/internal/audit"
 	"sauron-sees/internal/codex"
 	"sauron-sees/internal/config"
 	"sauron-sees/internal/qualitygate"
@@ -30,43 +31,136 @@ type DailyDocument struct {
 	Content string
 }
 
-type Result struct {
-	SummaryPath string
-	WeekKey     string
+type FinalizeOptions struct {
+	DryRun bool
 }
 
-func (s Service) FinalizeWeek(ctx context.Context, weekKey string, start time.Time, end time.Time) (Result, error) {
+type Result struct {
+	SummaryPath      string
+	PromptPath       string
+	VerificationPath string
+	ReportPath       string
+	AuditPath        string
+	WeekKey          string
+	Verification     string
+	CleanupEligible  bool
+}
+
+func (s Service) FinalizeWeek(ctx context.Context, weekKey string, start time.Time, end time.Time, options FinalizeOptions) (Result, error) {
 	docs, err := s.collectDocs(start, end)
 	if err != nil {
 		return Result{}, err
 	}
+	attempt := audit.New(mode(options.DryRun))
+	attempt.InputCount = len(docs)
+
+	outputDir := s.Layout.WeeklyRoot(weekKey)
+	if options.DryRun {
+		outputDir = s.Layout.WeeklyDryRunDir(weekKey)
+	}
+	generatedPath := filepath.Join(outputDir, "generated.md")
+	promptPath := filepath.Join(outputDir, "prompt.txt")
+	verificationPath := filepath.Join(outputDir, "verification.txt")
+	reportPath := filepath.Join(outputDir, "summary.json")
+	auditPath := s.Layout.WeeklyAuditPath(weekKey)
+	if options.DryRun {
+		auditPath = filepath.Join(outputDir, "audit.json")
+	}
+
 	prompt, err := s.buildPrompt(weekKey, start, end, docs)
 	if err != nil {
+		attempt.ErrorMessage = err.Error()
+		_ = audit.Write(auditPath, attempt)
 		return Result{}, err
 	}
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return Result{}, fmt.Errorf("mkdir weekly output dir: %w", err)
+	}
+	if err := os.WriteFile(promptPath, []byte(prompt+"\n"), 0o644); err != nil {
+		return Result{}, fmt.Errorf("write weekly prompt: %w", err)
+	}
+
 	markdown, err := s.Runner.Run(ctx, codex.Request{
 		WorkingDir: s.Layout.WeeklyMarkdownRoot,
 		Profile:    s.Config.CodexProfile,
 		Prompt:     prompt,
 	})
 	if err != nil {
+		attempt.GeneratedPaths = []string{promptPath}
+		attempt.ErrorMessage = err.Error()
+		_ = audit.Write(auditPath, attempt)
 		return Result{}, err
 	}
-	if err := validateMarkdown(markdown); err != nil {
+	finalMarkdown := strings.TrimSpace(markdown) + "\n"
+	if err := os.WriteFile(generatedPath, []byte(finalMarkdown), 0o644); err != nil {
+		return Result{}, fmt.Errorf("write weekly generated markdown: %w", err)
+	}
+
+	report := qualitygate.Evaluate(qualitygate.KindWeekly, finalMarkdown, s.Config.WeeklySummaryMinWords)
+	verification, err := qualitygate.VerifyContent(ctx, s.Runner, s.Config.CodexProfile, s.Layout.WeeklyMarkdownRoot, qualitygate.KindWeekly, finalMarkdown)
+	if err != nil {
+		attempt.GeneratedPaths = []string{promptPath, generatedPath}
+		attempt.Validation = report
+		attempt.ErrorMessage = err.Error()
+		_ = audit.Write(auditPath, attempt)
 		return Result{}, err
 	}
+	if err := os.WriteFile(verificationPath, []byte(strings.TrimSpace(verification)+"\n"), 0o644); err != nil {
+		return Result{}, fmt.Errorf("write weekly verification: %w", err)
+	}
+	qualitygate.ApplyVerifier(&report, verification)
+	if err := qualitygate.WriteJSON(reportPath, report); err != nil {
+		return Result{}, fmt.Errorf("write weekly validation report: %w", err)
+	}
+
+	result := Result{
+		SummaryPath:      generatedPath,
+		PromptPath:       promptPath,
+		VerificationPath: verificationPath,
+		ReportPath:       reportPath,
+		AuditPath:        auditPath,
+		WeekKey:          weekKey,
+		Verification:     verification,
+		CleanupEligible:  report.CleanupEligible,
+	}
+
+	attempt.GeneratedPaths = []string{promptPath, generatedPath, verificationPath, reportPath}
+	attempt.Validation = report
+	attempt.VerifierResult = report.VerifierResult
+	if report.CleanupEligible {
+		attempt.CleanupDecision = "allow"
+		attempt.CleanupReason = "all local checks passed and verifier returned SAFE"
+	} else {
+		attempt.CleanupDecision = "deny"
+		attempt.CleanupReason = "validation or verifier gate failed"
+	}
+
+	if options.DryRun {
+		if err := audit.Write(auditPath, attempt); err != nil {
+			return Result{}, err
+		}
+		return result, nil
+	}
+	if !report.CleanupEligible {
+		if err := audit.Write(auditPath, attempt); err != nil {
+			return Result{}, err
+		}
+		return Result{}, fmt.Errorf("weekly summary failed validation gate")
+	}
+
 	if err := os.MkdirAll(s.Layout.WeeklyMarkdownRoot, 0o755); err != nil {
 		return Result{}, fmt.Errorf("mkdir weekly markdown root: %w", err)
 	}
 	summaryPath := s.Layout.WeeklySummaryPath(weekKey)
-	finalMarkdown := strings.TrimSpace(markdown) + "\n"
 	if err := os.WriteFile(summaryPath, []byte(finalMarkdown), 0o644); err != nil {
 		return Result{}, fmt.Errorf("write weekly summary: %w", err)
 	}
-	if err := qualitygate.VerifyFileAndContent(ctx, s.Runner, s.Config.CodexProfile, s.Layout.WeeklyMarkdownRoot, "weekly summary", summaryPath, finalMarkdown, s.Config.WeeklySummaryMinWords); err != nil {
+	result.SummaryPath = summaryPath
+	attempt.GeneratedPaths = append(attempt.GeneratedPaths, summaryPath)
+	if err := audit.Write(auditPath, attempt); err != nil {
 		return Result{}, err
 	}
-	return Result{SummaryPath: summaryPath, WeekKey: weekKey}, nil
+	return result, nil
 }
 
 func (s Service) collectDocs(start time.Time, end time.Time) ([]DailyDocument, error) {
@@ -125,29 +219,11 @@ func joinDocs(docs []DailyDocument) string {
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
-func validateMarkdown(markdown string) error {
-	required := []string{
-		"# Weekly Work Summary",
-		"## Main Focus Areas",
-		"## Recurring Projects And Themes",
-		"## Meetings And Decisions",
-		"## Concrete Progress And Deliverables",
-		"## Open Threads And Risks",
-		"## Manager Email Draft",
+func mode(dryRun bool) string {
+	if dryRun {
+		return "dry-run"
 	}
-	trimmed := strings.TrimSpace(markdown)
-	if trimmed == "" {
-		return errors.New("weekly summary markdown was empty")
-	}
-	for _, marker := range required {
-		if !strings.Contains(trimmed, marker) {
-			return fmt.Errorf("weekly summary missing required section %q", marker)
-		}
-	}
-	if !strings.HasPrefix(trimmed, "---") {
-		return errors.New("weekly summary missing YAML frontmatter")
-	}
-	return nil
+	return "normal"
 }
 
 const defaultPromptTemplate = `

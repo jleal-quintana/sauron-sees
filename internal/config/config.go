@@ -12,27 +12,47 @@ import (
 )
 
 type Config struct {
-	Timezone               string   `toml:"timezone"`
-	CaptureIntervalMinutes int      `toml:"capture_interval_minutes"`
-	Workdays               []string `toml:"workdays"`
-	WorkStart              string   `toml:"work_start"`
-	WorkEnd                string   `toml:"work_end"`
-	CloseDayTime           string   `toml:"close_day_time"`
-	TempRoot               string   `toml:"temp_root"`
-	DailyMarkdownRoot      string   `toml:"daily_markdown_root"`
-	WeeklyMarkdownRoot     string   `toml:"weekly_markdown_root"`
-	CodexProfile           string   `toml:"codex_profile"`
-	PromptOverridePath     string   `toml:"prompt_override_path"`
-	GranolaEnabled         bool     `toml:"granola_enabled"`
-	GranolaMCPServerName   string   `toml:"granola_mcp_server_name"`
-	WeeklyAutoEnabled      bool     `toml:"weekly_auto_enabled"`
-	WeeklyCloseDay         string   `toml:"weekly_close_day"`
-	WeeklyCloseTime        string   `toml:"weekly_close_time"`
-	JPEGQuality            int      `toml:"jpeg_quality"`
-	ImageMaxDimension      int      `toml:"image_max_dimension"`
-	DeleteAfterSuccess     bool     `toml:"delete_after_success"`
-	DailySummaryMinWords   int      `toml:"daily_summary_min_words"`
-	WeeklySummaryMinWords  int      `toml:"weekly_summary_min_words"`
+	Timezone               string                   `toml:"timezone"`
+	CaptureIntervalMinutes int                      `toml:"capture_interval_minutes"`
+	Workdays               []string                 `toml:"workdays"`
+	WorkStart              string                   `toml:"work_start"`
+	WorkEnd                string                   `toml:"work_end"`
+	CloseDayTime           string                   `toml:"close_day_time"`
+	TempRoot               string                   `toml:"temp_root"`
+	DailyMarkdownRoot      string                   `toml:"daily_markdown_root"`
+	WeeklyMarkdownRoot     string                   `toml:"weekly_markdown_root"`
+	CodexProfile           string                   `toml:"codex_profile"`
+	PromptOverridePath     string                   `toml:"prompt_override_path"`
+	GranolaEnabled         bool                     `toml:"granola_enabled"`
+	GranolaMCPServerName   string                   `toml:"granola_mcp_server_name"`
+	TrayEnabled            bool                     `toml:"tray_enabled"`
+	WeeklyAutoEnabled      bool                     `toml:"weekly_auto_enabled"`
+	WeeklyCloseDay         string                   `toml:"weekly_close_day"`
+	WeeklyCloseTime        string                   `toml:"weekly_close_time"`
+	JPEGQuality            int                      `toml:"jpeg_quality"`
+	ImageMaxDimension      int                      `toml:"image_max_dimension"`
+	DeleteAfterSuccess     bool                     `toml:"delete_after_success"`
+	DailySummaryMinWords   int                      `toml:"daily_summary_min_words"`
+	WeeklySummaryMinWords  int                      `toml:"weekly_summary_min_words"`
+	Logging                LoggingConfig            `toml:"logging"`
+	WorkClassification     WorkClassificationConfig `toml:"work_classification"`
+}
+
+type LoggingConfig struct {
+	MaxSizeMB  int `toml:"max_size_mb"`
+	MaxBackups int `toml:"max_backups"`
+	MaxAgeDays int `toml:"max_age_days"`
+}
+
+type WorkClassificationConfig struct {
+	AdvisoryHintsEnabled bool     `toml:"advisory_hints_enabled"`
+	IncludeApps          []string `toml:"include_apps"`
+	ExcludeApps          []string `toml:"exclude_apps"`
+	IncludeTitles        []string `toml:"include_titles"`
+	ExcludeTitles        []string `toml:"exclude_titles"`
+	IncludeDomains       []string `toml:"include_domains"`
+	ExcludeDomains       []string `toml:"exclude_domains"`
+	Notes                []string `toml:"notes"`
 }
 
 var percentEnvPattern = regexp.MustCompile(`%([A-Za-z0-9_]+)%`)
@@ -52,6 +72,7 @@ func Default() Config {
 		PromptOverridePath:     "",
 		GranolaEnabled:         true,
 		GranolaMCPServerName:   "granola",
+		TrayEnabled:            true,
 		WeeklyAutoEnabled:      true,
 		WeeklyCloseDay:         "fri",
 		WeeklyCloseTime:        "18:45",
@@ -60,6 +81,15 @@ func Default() Config {
 		DeleteAfterSuccess:     true,
 		DailySummaryMinWords:   120,
 		WeeklySummaryMinWords:  180,
+		Logging: LoggingConfig{
+			MaxSizeMB:  5,
+			MaxBackups: 5,
+			MaxAgeDays: 14,
+		},
+		WorkClassification: WorkClassificationConfig{
+			AdvisoryHintsEnabled: true,
+			ExcludeDomains:       []string{"twitter.com", "x.com", "reddit.com", "youtube.com"},
+		},
 	}
 }
 
@@ -140,6 +170,15 @@ func (c *Config) Validate() error {
 	}
 	if c.WeeklySummaryMinWords < 50 {
 		return errors.New("config weekly_summary_min_words must be >= 50")
+	}
+	if c.Logging.MaxSizeMB <= 0 {
+		return errors.New("config logging.max_size_mb must be > 0")
+	}
+	if c.Logging.MaxBackups < 1 {
+		return errors.New("config logging.max_backups must be >= 1")
+	}
+	if c.Logging.MaxAgeDays < 1 {
+		return errors.New("config logging.max_age_days must be >= 1")
 	}
 	return nil
 }

@@ -20,8 +20,16 @@ func (l Layout) SheetsDir(day string) string {
 	return filepath.Join(l.DayRoot(day), "sheets")
 }
 
+func (l Layout) DayDryRunDir(day string) string {
+	return filepath.Join(l.DayRoot(day), "dry-run")
+}
+
 func (l Layout) ManifestPath(day string) string {
 	return filepath.Join(l.DayRoot(day), "manifest.jsonl")
+}
+
+func (l Layout) DayAuditPath(day string) string {
+	return filepath.Join(l.DayRoot(day), "audit.json")
 }
 
 func (l Layout) StatePath() string {
@@ -38,4 +46,16 @@ func (l Layout) SummaryPath(day string) string {
 
 func (l Layout) WeeklySummaryPath(weekKey string) string {
 	return filepath.Join(l.WeeklyMarkdownRoot, weekKey+"-work-summary.md")
+}
+
+func (l Layout) WeeklyRoot(weekKey string) string {
+	return filepath.Join(l.TempRoot, "weekly", weekKey)
+}
+
+func (l Layout) WeeklyDryRunDir(weekKey string) string {
+	return filepath.Join(l.WeeklyRoot(weekKey), "dry-run")
+}
+
+func (l Layout) WeeklyAuditPath(weekKey string) string {
+	return filepath.Join(l.WeeklyRoot(weekKey), "audit.json")
 }

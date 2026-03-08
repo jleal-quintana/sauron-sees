@@ -160,6 +160,60 @@ func (p *Planner) ShouldAutoCloseWeek(now time.Time, weekKey string, alreadyClos
 	return local.Hour()*60+local.Minute() >= p.weeklyCloseMins
 }
 
+func (p *Planner) NextCaptureAfter(now time.Time) time.Time {
+	local := now.In(p.location)
+	for dayOffset := 0; dayOffset < 14; dayOffset++ {
+		day := local.AddDate(0, 0, dayOffset)
+		if len(p.workdays) > 0 && !p.workdays[day.Weekday()] {
+			continue
+		}
+		base := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, p.location)
+		candidate := base.Add(time.Duration(p.workStartMins) * time.Minute)
+		if dayOffset == 0 && local.After(candidate) {
+			elapsed := local.Sub(candidate)
+			steps := int(elapsed / p.interval)
+			candidate = candidate.Add(time.Duration(steps+1) * p.interval)
+		}
+		windowEnd := base.Add(time.Duration(p.workEndMins) * time.Minute)
+		if candidate.After(windowEnd) {
+			continue
+		}
+		if candidate.After(local) {
+			return candidate
+		}
+	}
+	return time.Time{}
+}
+
+func (p *Planner) NextDailyCloseAfter(now time.Time) time.Time {
+	local := now.In(p.location)
+	for dayOffset := 0; dayOffset < 14; dayOffset++ {
+		day := local.AddDate(0, 0, dayOffset)
+		base := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, p.location)
+		candidate := base.Add(time.Duration(p.closeMins) * time.Minute)
+		if candidate.After(local) {
+			return candidate
+		}
+	}
+	return time.Time{}
+}
+
+func (p *Planner) NextWeeklyCloseAfter(now time.Time) time.Time {
+	local := now.In(p.location)
+	for dayOffset := 0; dayOffset < 21; dayOffset++ {
+		day := local.AddDate(0, 0, dayOffset)
+		if day.Weekday() != p.weeklyCloseDay {
+			continue
+		}
+		base := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, p.location)
+		candidate := base.Add(time.Duration(p.weeklyCloseMins) * time.Minute)
+		if candidate.After(local) {
+			return candidate
+		}
+	}
+	return time.Time{}
+}
+
 func weekdayToken(value string) (time.Weekday, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "sun":

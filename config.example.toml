@@ -14,6 +14,7 @@ prompt_override_path = ""
 
 granola_enabled = true
 granola_mcp_server_name = "granola"
+tray_enabled = true
 
 weekly_auto_enabled = true
 weekly_close_day = "fri"
@@ -24,3 +25,18 @@ image_max_dimension = 1600
 delete_after_success = true
 daily_summary_min_words = 120
 weekly_summary_min_words = 180
+
+[logging]
+max_size_mb = 5
+max_backups = 5
+max_age_days = 14
+
+[work_classification]
+advisory_hints_enabled = true
+include_apps = []
+exclude_apps = []
+include_titles = []
+exclude_titles = []
+include_domains = []
+exclude_domains = ["twitter.com", "x.com", "reddit.com", "youtube.com"]
+notes = []

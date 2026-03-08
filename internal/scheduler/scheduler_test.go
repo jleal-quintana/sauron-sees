@@ -79,4 +79,13 @@ func TestShouldCaptureAndAutoClose(t *testing.T) {
 	if !planner.ShouldAutoClose(time.Date(2026, 3, 10, 9, 0, 0, 0, loc), "2026-03-09", false, false) {
 		t.Fatalf("expected previous day to auto close on next day")
 	}
+	if planner.NextCaptureAfter(now).IsZero() {
+		t.Fatalf("expected next capture time")
+	}
+	if planner.NextDailyCloseAfter(now).IsZero() {
+		t.Fatalf("expected next daily close time")
+	}
+	if planner.NextWeeklyCloseAfter(now).IsZero() {
+		t.Fatalf("expected next weekly close time")
+	}
 }

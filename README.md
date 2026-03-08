@@ -9,17 +9,22 @@ Windows-first background agent in Go that captures periodic screenshots, generat
 - Builds a daily work summary markdown in Obsidian-ready format.
 - Builds a weekly work summary markdown with a manager-ready email draft.
 - Uses a second Codex pass plus local file checks before deleting temporary screenshots.
+- Supports `dry-run` previews for both daily and weekly pipelines.
+- Exposes a native Windows tray for pause/resume/manual actions.
 - Optionally uses Granola MCP during the daily summary flow.
 
 ## Main Commands
 
 ```bash
 sauron-sees agent
+sauron-sees status
 sauron-sees capture-now
-sauron-sees close-day [--date YYYY-MM-DD]
-sauron-sees weekly-summary [--week YYYY-Www]
+sauron-sees pause --duration 1h
+sauron-sees resume
+sauron-sees close-day [--date YYYY-MM-DD] [--dry-run]
+sauron-sees weekly-summary [--week YYYY-Www] [--dry-run]
 sauron-sees weekly-summary --from YYYY-MM-DD --to YYYY-MM-DD
-sauron-sees doctor
+sauron-sees doctor [--json]
 sauron-sees install-startup
 sauron-sees uninstall-startup
 ```
@@ -34,12 +39,15 @@ Copy `config.example.toml` into your user config directory and adjust:
 - capture cadence and work hours
 - daily and weekly minimum word counts
 - weekly auto-close day and time
+- tray enablement and log rotation
+- advisory work/non-work classification hints
 - Codex profile and Granola MCP settings
 
 ## Current Status
 
 - `go test ./...` passes
 - `GOOS=windows GOARCH=amd64 go build ./...` passes
+- GitHub Actions CI validates Linux tests, Windows tests/builds, and repo hygiene
 - Real runtime behavior still needs end-to-end validation on Windows with Codex and Granola configured locally
 - SSH push is configured to use the `github-work` host alias for this repository
 - Daily and weekly summaries are designed to be copied directly into Obsidian and manager updates

@@ -9,7 +9,7 @@ Produce the weekly answer using these sections in order:
 ## Meetings And Decisions
 ## Concrete Progress And Deliverables
 ## Open Threads And Risks
-## Manager Update Draft
+## Manager Email Draft
 ```
 
 Rules:

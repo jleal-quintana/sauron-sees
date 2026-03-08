@@ -19,27 +19,51 @@ const (
 
 type FileState struct {
 	LastSuccessfulClose string                `json:"last_successful_close"`
+	PausedUntil         string                `json:"paused_until,omitempty"`
 	Days                map[string]*DayState  `json:"days"`
 	Weeks               map[string]*WeekState `json:"weeks"`
 }
 
 type DayState struct {
-	Date               string `json:"date"`
-	Status             string `json:"status"`
-	LastCaptureAt      string `json:"last_capture_at,omitempty"`
-	CloseAttempts      int    `json:"close_attempts"`
-	LastCloseAttemptAt string `json:"last_close_attempt_at,omitempty"`
-	LastError          string `json:"last_error,omitempty"`
-	SummaryPath        string `json:"summary_path,omitempty"`
+	Date                string         `json:"date"`
+	Status              string         `json:"status"`
+	LastCaptureAt       string         `json:"last_capture_at,omitempty"`
+	CloseAttempts       int            `json:"close_attempts"`
+	LastCloseAttemptAt  string         `json:"last_close_attempt_at,omitempty"`
+	LastError           string         `json:"last_error,omitempty"`
+	SummaryPath         string         `json:"summary_path,omitempty"`
+	LastVerifierResult  string         `json:"last_verifier_result,omitempty"`
+	LastVerifierAt      string         `json:"last_verifier_at,omitempty"`
+	LastCleanupDecision string         `json:"last_cleanup_decision,omitempty"`
+	LastCleanupReason   string         `json:"last_cleanup_reason,omitempty"`
+	LastDryRun          *AttemptRecord `json:"last_dry_run,omitempty"`
+	LastFinalize        *AttemptRecord `json:"last_finalize,omitempty"`
 }
 
 type WeekState struct {
-	WeekKey            string `json:"week_key"`
-	Status             string `json:"status"`
-	CloseAttempts      int    `json:"close_attempts"`
-	LastCloseAttemptAt string `json:"last_close_attempt_at,omitempty"`
-	LastError          string `json:"last_error,omitempty"`
-	SummaryPath        string `json:"summary_path,omitempty"`
+	WeekKey             string         `json:"week_key"`
+	Status              string         `json:"status"`
+	CloseAttempts       int            `json:"close_attempts"`
+	LastCloseAttemptAt  string         `json:"last_close_attempt_at,omitempty"`
+	LastError           string         `json:"last_error,omitempty"`
+	SummaryPath         string         `json:"summary_path,omitempty"`
+	LastVerifierResult  string         `json:"last_verifier_result,omitempty"`
+	LastVerifierAt      string         `json:"last_verifier_at,omitempty"`
+	LastCleanupDecision string         `json:"last_cleanup_decision,omitempty"`
+	LastCleanupReason   string         `json:"last_cleanup_reason,omitempty"`
+	LastDryRun          *AttemptRecord `json:"last_dry_run,omitempty"`
+	LastFinalize        *AttemptRecord `json:"last_finalize,omitempty"`
+}
+
+type AttemptRecord struct {
+	AttemptAt        string `json:"attempt_at"`
+	Mode             string `json:"mode"`
+	GeneratedPath    string `json:"generated_path,omitempty"`
+	VerificationPath string `json:"verification_path,omitempty"`
+	VerifierResult   string `json:"verifier_result,omitempty"`
+	CleanupDecision  string `json:"cleanup_decision,omitempty"`
+	CleanupReason    string `json:"cleanup_reason,omitempty"`
+	ErrorMessage     string `json:"error_message,omitempty"`
 }
 
 func Load(path string) (*FileState, error) {
@@ -118,6 +142,21 @@ func (s *FileState) MarkFailed(day string, err error) {
 	ds.LastError = err.Error()
 }
 
+func (s *FileState) MarkDayAttempt(day string, record AttemptRecord, dryRun bool) {
+	ds := s.EnsureDay(day)
+	if dryRun {
+		ds.LastDryRun = &record
+		return
+	}
+	ds.LastFinalize = &record
+	ds.LastVerifierResult = record.VerifierResult
+	ds.LastCleanupDecision = record.CleanupDecision
+	ds.LastCleanupReason = record.CleanupReason
+	if record.VerifierResult != "" {
+		ds.LastVerifierAt = record.AttemptAt
+	}
+}
+
 func (s *FileState) EnsureWeek(weekKey string) *WeekState {
 	if existing, ok := s.Weeks[weekKey]; ok {
 		return existing
@@ -147,6 +186,21 @@ func (s *FileState) MarkWeekFailed(weekKey string, err error) {
 	ws := s.EnsureWeek(weekKey)
 	ws.Status = StatusFailed
 	ws.LastError = err.Error()
+}
+
+func (s *FileState) MarkWeekAttempt(weekKey string, record AttemptRecord, dryRun bool) {
+	ws := s.EnsureWeek(weekKey)
+	if dryRun {
+		ws.LastDryRun = &record
+		return
+	}
+	ws.LastFinalize = &record
+	ws.LastVerifierResult = record.VerifierResult
+	ws.LastCleanupDecision = record.CleanupDecision
+	ws.LastCleanupReason = record.CleanupReason
+	if record.VerifierResult != "" {
+		ws.LastVerifierAt = record.AttemptAt
+	}
 }
 
 func (s *FileState) ShouldRetryWeek(weekKey string) bool {
@@ -205,4 +259,31 @@ func (s *FileState) PendingBefore(today string) []string {
 	}
 	sort.Strings(dates)
 	return dates
+}
+
+func (s *FileState) SetPausedUntil(until time.Time) {
+	s.PausedUntil = until.UTC().Format(time.RFC3339)
+}
+
+func (s *FileState) ClearPause() {
+	s.PausedUntil = ""
+}
+
+func (s *FileState) Paused(now time.Time) bool {
+	if s.PausedUntil == "" {
+		return false
+	}
+	until, err := time.Parse(time.RFC3339, s.PausedUntil)
+	if err != nil {
+		return false
+	}
+	return now.UTC().Before(until)
+}
+
+func (s *FileState) PausedUntilTime() time.Time {
+	if s.PausedUntil == "" {
+		return time.Time{}
+	}
+	t, _ := time.Parse(time.RFC3339, s.PausedUntil)
+	return t
 }

@@ -11,3 +11,7 @@ func Install(taskName string, executable string, configPath string) error {
 func Uninstall(taskName string) error {
 	return errors.New("startup task removal is only supported on Windows")
 }
+
+func Exists(taskName string) (bool, error) {
+	return false, errors.New("startup task inspection is only supported on Windows")
+}

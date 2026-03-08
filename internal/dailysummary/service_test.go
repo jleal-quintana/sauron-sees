@@ -41,7 +41,7 @@ func TestFinalizeDayDeletesArtifactsOnSuccess(t *testing.T) {
 	runner := &fakeRunner{markdown: validMarkdown(day)}
 	service := Service{Config: cfg, Layout: layout, Runner: runner}
 
-	result, err := service.FinalizeDay(context.Background(), day)
+	result, err := service.FinalizeDay(context.Background(), day, FinalizeOptions{})
 	if err != nil {
 		t.Fatalf("FinalizeDay() error = %v", err)
 	}
@@ -54,6 +54,26 @@ func TestFinalizeDayDeletesArtifactsOnSuccess(t *testing.T) {
 	if _, err := os.Stat(layout.ManifestPath(day)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected manifest to be deleted, got %v", err)
 	}
+	if _, err := os.Stat(layout.DayAuditPath(day)); err != nil {
+		t.Fatalf("expected audit file: %v", err)
+	}
+}
+
+func TestFinalizeDayDryRunPreservesArtifacts(t *testing.T) {
+	layout, cfg, day := prepareDayFixture(t)
+	runner := &fakeRunner{markdown: validMarkdown(day)}
+	service := Service{Config: cfg, Layout: layout, Runner: runner}
+
+	result, err := service.FinalizeDay(context.Background(), day, FinalizeOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("FinalizeDay() error = %v", err)
+	}
+	if !strings.Contains(result.SummaryPath, "dry-run") {
+		t.Fatalf("expected dry-run summary path, got %s", result.SummaryPath)
+	}
+	if _, err := os.Stat(layout.ManifestPath(day)); err != nil {
+		t.Fatalf("expected manifest to remain after dry-run: %v", err)
+	}
 }
 
 func TestFinalizeDayPreservesArtifactsOnInvalidMarkdown(t *testing.T) {
@@ -61,7 +81,7 @@ func TestFinalizeDayPreservesArtifactsOnInvalidMarkdown(t *testing.T) {
 	runner := &fakeRunner{markdown: "# wrong"}
 	service := Service{Config: cfg, Layout: layout, Runner: runner}
 
-	if _, err := service.FinalizeDay(context.Background(), day); err == nil {
+	if _, err := service.FinalizeDay(context.Background(), day, FinalizeOptions{}); err == nil {
 		t.Fatalf("expected validation error")
 	}
 	if _, err := os.Stat(layout.ManifestPath(day)); err != nil {
@@ -74,12 +94,14 @@ func prepareDayFixture(t *testing.T) (workspace.Layout, config.Config, string) {
 	root := t.TempDir()
 	day := "2026-03-09"
 	layout := workspace.Layout{
-		TempRoot:          filepath.Join(root, "temp"),
-		DailyMarkdownRoot: filepath.Join(root, "daily"),
+		TempRoot:           filepath.Join(root, "temp"),
+		DailyMarkdownRoot:  filepath.Join(root, "daily"),
+		WeeklyMarkdownRoot: filepath.Join(root, "weekly"),
 	}
 	cfg := config.Default()
 	cfg.TempRoot = layout.TempRoot
 	cfg.DailyMarkdownRoot = layout.DailyMarkdownRoot
+	cfg.WeeklyMarkdownRoot = layout.WeeklyMarkdownRoot
 	cfg.DailySummaryMinWords = 50
 
 	imagePath := filepath.Join(layout.RawDir(day), "shot.jpg")
@@ -119,7 +141,7 @@ No meeting context was available.
 Implemented the capture and summary pipeline.
 ## Open Threads
 Need Windows validation.
-## Suggested Manager Update
+## Manager Email Draft
 Implemented the first end-to-end version of the tool.
 ## Work Type Time Breakdown
 | Category | Estimated Time | Samples |

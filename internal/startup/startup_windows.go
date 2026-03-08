@@ -37,3 +37,16 @@ func Uninstall(taskName string) error {
 	}
 	return nil
 }
+
+func Exists(taskName string) (bool, error) {
+	cmd := exec.Command("schtasks.exe", "/Query", "/TN", taskName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		text := strings.TrimSpace(string(output))
+		if strings.Contains(strings.ToLower(text), "cannot find") || strings.Contains(strings.ToLower(text), "no se puede encontrar") {
+			return false, nil
+		}
+		return false, fmt.Errorf("query scheduled task: %w: %s", err, text)
+	}
+	return true, nil
+}

@@ -3,14 +3,15 @@ package dailysummary
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/template"
 	"time"
 
+	"sauron-sees/internal/audit"
 	"sauron-sees/internal/codex"
 	"sauron-sees/internal/config"
 	"sauron-sees/internal/contactsheet"
@@ -25,24 +26,62 @@ type Service struct {
 	Runner codex.Runner
 }
 
-type Result struct {
-	SummaryPath string
-	SheetPaths  []string
+type FinalizeOptions struct {
+	DryRun bool
 }
 
-func (s Service) FinalizeDay(ctx context.Context, day string) (Result, error) {
+type Result struct {
+	SummaryPath      string
+	SheetPaths       []string
+	PromptPath       string
+	VerificationPath string
+	ReportPath       string
+	AuditPath        string
+	Verification     string
+	CleanupEligible  bool
+}
+
+func (s Service) FinalizeDay(ctx context.Context, day string, options FinalizeOptions) (Result, error) {
 	records, err := metadata.Read(s.Layout.ManifestPath(day))
 	if err != nil {
 		return Result{}, err
 	}
-	sheets, err := contactsheet.Build(day, s.Layout.SheetsDir(day), records)
+	attempt := audit.New(mode(options.DryRun))
+	attempt.InputCount = len(records)
+
+	outputDir := s.Layout.DayRoot(day)
+	if options.DryRun {
+		outputDir = s.Layout.DayDryRunDir(day)
+	}
+	sheetsDir := filepath.Join(outputDir, "contact-sheets")
+	generatedPath := filepath.Join(outputDir, "generated.md")
+	promptPath := filepath.Join(outputDir, "prompt.txt")
+	verificationPath := filepath.Join(outputDir, "verification.txt")
+	reportPath := filepath.Join(outputDir, "summary.json")
+	auditPath := s.Layout.DayAuditPath(day)
+	if options.DryRun {
+		auditPath = filepath.Join(outputDir, "audit.json")
+	}
+
+	sheets, err := contactsheet.Build(day, sheetsDir, records)
 	if err != nil {
+		attempt.ErrorMessage = err.Error()
+		_ = audit.Write(auditPath, attempt)
 		return Result{}, fmt.Errorf("build contact sheets: %w", err)
 	}
 	prompt, err := s.buildPrompt(day, records)
 	if err != nil {
+		attempt.ErrorMessage = err.Error()
+		_ = audit.Write(auditPath, attempt)
 		return Result{}, err
 	}
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return Result{}, fmt.Errorf("mkdir output dir: %w", err)
+	}
+	if err := os.WriteFile(promptPath, []byte(prompt+"\n"), 0o644); err != nil {
+		return Result{}, fmt.Errorf("write prompt: %w", err)
+	}
+
 	markdown, err := s.Runner.Run(ctx, codex.Request{
 		WorkingDir: s.Layout.DayRoot(day),
 		Profile:    s.Config.CodexProfile,
@@ -50,31 +89,90 @@ func (s Service) FinalizeDay(ctx context.Context, day string) (Result, error) {
 		ImagePaths: sheets,
 	})
 	if err != nil {
+		attempt.GeneratedPaths = []string{promptPath}
+		attempt.ErrorMessage = err.Error()
+		_ = audit.Write(auditPath, attempt)
 		return Result{}, err
 	}
-	if err := validateMarkdown(markdown); err != nil {
+	finalMarkdown := strings.TrimSpace(markdown) + "\n"
+	if err := os.WriteFile(generatedPath, []byte(finalMarkdown), 0o644); err != nil {
+		return Result{}, fmt.Errorf("write generated markdown: %w", err)
+	}
+
+	report := qualitygate.Evaluate(qualitygate.KindDaily, finalMarkdown, s.Config.DailySummaryMinWords)
+	verification, err := qualitygate.VerifyContent(ctx, s.Runner, s.Config.CodexProfile, s.Layout.DayRoot(day), qualitygate.KindDaily, finalMarkdown)
+	if err != nil {
+		attempt.GeneratedPaths = []string{promptPath, generatedPath}
+		attempt.Validation = report
+		attempt.ErrorMessage = err.Error()
+		_ = audit.Write(auditPath, attempt)
 		return Result{}, err
 	}
+	if err := os.WriteFile(verificationPath, []byte(strings.TrimSpace(verification)+"\n"), 0o644); err != nil {
+		return Result{}, fmt.Errorf("write verification: %w", err)
+	}
+	qualitygate.ApplyVerifier(&report, verification)
+	if err := qualitygate.WriteJSON(reportPath, report); err != nil {
+		return Result{}, fmt.Errorf("write validation report: %w", err)
+	}
+
+	result := Result{
+		SummaryPath:      generatedPath,
+		SheetPaths:       sheets,
+		PromptPath:       promptPath,
+		VerificationPath: verificationPath,
+		ReportPath:       reportPath,
+		AuditPath:        auditPath,
+		Verification:     verification,
+		CleanupEligible:  report.CleanupEligible,
+	}
+
+	attempt.GeneratedPaths = []string{promptPath, generatedPath, verificationPath, reportPath}
+	attempt.Validation = report
+	attempt.VerifierResult = report.VerifierResult
+	if report.CleanupEligible {
+		attempt.CleanupDecision = "allow"
+		attempt.CleanupReason = "all local checks passed and verifier returned SAFE"
+	} else {
+		attempt.CleanupDecision = "deny"
+		attempt.CleanupReason = "validation or verifier gate failed"
+	}
+
+	if options.DryRun {
+		if err := audit.Write(auditPath, attempt); err != nil {
+			return Result{}, err
+		}
+		return result, nil
+	}
+	if !report.CleanupEligible {
+		if err := audit.Write(auditPath, attempt); err != nil {
+			return Result{}, err
+		}
+		return Result{}, fmt.Errorf("daily summary failed validation gate")
+	}
+
 	if err := os.MkdirAll(s.Layout.DailyMarkdownRoot, 0o755); err != nil {
 		return Result{}, fmt.Errorf("mkdir daily markdown root: %w", err)
 	}
 	summaryPath := s.Layout.SummaryPath(day)
-	finalMarkdown := strings.TrimSpace(markdown) + "\n"
 	if err := os.WriteFile(summaryPath, []byte(finalMarkdown), 0o644); err != nil {
 		return Result{}, fmt.Errorf("write summary markdown: %w", err)
 	}
-	if err := qualitygate.VerifyFileAndContent(ctx, s.Runner, s.Config.CodexProfile, s.Layout.DayRoot(day), "daily summary", summaryPath, finalMarkdown, s.Config.DailySummaryMinWords); err != nil {
-		return Result{}, err
-	}
-	if s.Config.DeleteAfterSuccess {
+	result.SummaryPath = summaryPath
+	attempt.GeneratedPaths = append(attempt.GeneratedPaths, summaryPath)
+	if s.Config.DeleteAfterSuccess && report.CleanupEligible {
 		if err := cleanupDayArtifacts(s.Layout, day); err != nil {
+			attempt.CleanupDecision = "deny"
+			attempt.CleanupReason = "cleanup failed"
+			attempt.ErrorMessage = err.Error()
+			_ = audit.Write(auditPath, attempt)
 			return Result{}, err
 		}
 	}
-	return Result{
-		SummaryPath: summaryPath,
-		SheetPaths:  sheets,
-	}, nil
+	if err := audit.Write(auditPath, attempt); err != nil {
+		return Result{}, err
+	}
+	return result, nil
 }
 
 func (s Service) buildPrompt(day string, records []metadata.CaptureRecord) (string, error) {
@@ -91,7 +189,7 @@ Then include these sections with these exact headings:
 ## Meetings And Decisions
 ## Concrete Work Done
 ## Open Threads
-## Suggested Manager Update
+## Manager Email Draft
 ## Work Type Time Breakdown`
 
 	summary := summarizeMetadata(records, s.Config.CaptureIntervalMinutes)
@@ -110,12 +208,14 @@ Then include these sections with these exact headings:
 		Granola        string
 		OutputContract string
 		Timezone       string
+		Hints          string
 	}{
 		Date:           day,
 		Metadata:       summary,
 		Granola:        granola,
 		OutputContract: outputContract,
 		Timezone:       s.Config.Timezone,
+		Hints:          advisoryHints(s.Config.WorkClassification),
 	}
 
 	tmplText := defaultPromptTemplate
@@ -137,31 +237,6 @@ Then include these sections with these exact headings:
 		return "", fmt.Errorf("render prompt template: %w", err)
 	}
 	return strings.TrimSpace(buf.String()), nil
-}
-
-func validateMarkdown(markdown string) error {
-	required := []string{
-		"# Daily Work Summary",
-		"## Focus Areas",
-		"## Meetings And Decisions",
-		"## Concrete Work Done",
-		"## Open Threads",
-		"## Suggested Manager Update",
-		"## Work Type Time Breakdown",
-	}
-	trimmed := strings.TrimSpace(markdown)
-	if trimmed == "" {
-		return errors.New("daily summary markdown was empty")
-	}
-	for _, marker := range required {
-		if !strings.Contains(trimmed, marker) {
-			return fmt.Errorf("daily summary missing required section %q", marker)
-		}
-	}
-	if !strings.HasPrefix(trimmed, "---") {
-		return errors.New("daily summary missing YAML frontmatter")
-	}
-	return nil
 }
 
 func cleanupDayArtifacts(layout workspace.Layout, day string) error {
@@ -249,6 +324,37 @@ func blankFallback(value string, fallback string) string {
 	return strings.TrimSpace(value)
 }
 
+func advisoryHints(cfg config.WorkClassificationConfig) string {
+	if !cfg.AdvisoryHintsEnabled {
+		return "No advisory work classification hints were configured."
+	}
+	var lines []string
+	appendList := func(label string, values []string) {
+		if len(values) == 0 {
+			return
+		}
+		lines = append(lines, fmt.Sprintf("%s: %s", label, strings.Join(values, ", ")))
+	}
+	appendList("Likely work apps", cfg.IncludeApps)
+	appendList("Likely non-work apps", cfg.ExcludeApps)
+	appendList("Likely work titles", cfg.IncludeTitles)
+	appendList("Likely non-work titles", cfg.ExcludeTitles)
+	appendList("Likely work domains", cfg.IncludeDomains)
+	appendList("Likely non-work domains", cfg.ExcludeDomains)
+	appendList("Additional notes", cfg.Notes)
+	if len(lines) == 0 {
+		return "No advisory work classification hints were configured."
+	}
+	return strings.Join(lines, "\n")
+}
+
+func mode(dryRun bool) string {
+	if dryRun {
+		return "dry-run"
+	}
+	return "normal"
+}
+
 const defaultPromptTemplate = `
 You are preparing a daily work summary for {{ .Date }} in timezone {{ .Timezone }}.
 
@@ -258,11 +364,16 @@ Use the metadata summary below as supporting structure:
 
 {{ .Granola }}
 
+Advisory work classification hints:
+{{ .Hints }}
+
 Requirements:
 - Decide yourself which screens represent real work and which are personal, recreational, or irrelevant. Exclude non-work activity from the summary.
+- Treat the hints above as advisory only. Override them when the screenshots clearly contradict them.
 - Organize the narrative by project, theme, or outcome instead of by app name or work-type category.
 - At the end, include a markdown table under "## Work Type Time Breakdown" estimating time by work type. Use categories such as Programming, Modeling / Analysis, Presentations, Meetings, Documents / Writing, Email, Planning / PM, Research / Reference, Design, Terminal / DevOps, Coordination / Chat, and Admin / Operations. Add a category only if it is supported by evidence.
 - Do not include a Non-work row in the final table.
+- Keep "## Manager Email Draft" directly copyable into an email.
 - If the evidence is weak or mixed with non-work browsing, say so explicitly instead of fabricating productivity.
 - Be precise and conservative. Do not invent tasks, meetings, or deliverables.
 - Mention uncertainty when evidence is weak.

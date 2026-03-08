@@ -21,7 +21,7 @@ sauron-sees weekly-summary --from 2026-03-02 --to 2026-03-06
 ```
 
 2. Read the generated weekly markdown.
-The Go command writes a validated weekly markdown into the configured weekly folder.
+The Go command writes a validated weekly markdown into the configured weekly folder, including a `## Manager Email Draft` section.
 
 3. Refine only if requested.
 If the user wants a shorter email or a different tone, edit the generated weekly markdown while preserving the factual content and structure in `references/output-format.md`.
@@ -32,7 +32,7 @@ If the user wants a shorter email or a different tone, edit the generated weekly
 - Do not call Granola in this skill. Use only the daily markdowns and the generated weekly markdown.
 - Prefer cross-day patterns over repeating each day verbatim.
 - Separate concrete outcomes from possible inferences.
-- If the user asks for a mail-ready version, compress the `Manager Update Draft` section into 5-8 sentences.
+- If the user asks for a mail-ready version, compress the `Manager Email Draft` section into 5-8 sentences.
 
 ## Inputs
 
@@ -46,7 +46,7 @@ If the user wants a shorter email or a different tone, edit the generated weekly
 - Meetings and decisions worth surfacing upward.
 - Concrete deliverables or visible progress.
 - Open threads and next steps.
-- Manager update draft.
+- Manager email draft.
 
 ## References
 

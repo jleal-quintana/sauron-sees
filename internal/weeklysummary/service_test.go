@@ -54,12 +54,42 @@ func TestFinalizeWeekWritesMarkdown(t *testing.T) {
 	}
 	start := mustDate("2026-03-09")
 	end := mustDate("2026-03-15")
-	result, err := svc.FinalizeWeek(context.Background(), "2026-W11", start, end)
+	result, err := svc.FinalizeWeek(context.Background(), "2026-W11", start, end, FinalizeOptions{})
 	if err != nil {
 		t.Fatalf("FinalizeWeek() error = %v", err)
 	}
 	if _, err := os.Stat(result.SummaryPath); err != nil {
 		t.Fatalf("expected weekly file: %v", err)
+	}
+	if _, err := os.Stat(layout.WeeklyAuditPath("2026-W11")); err != nil {
+		t.Fatalf("expected weekly audit: %v", err)
+	}
+}
+
+func TestFinalizeWeekDryRunWritesPreview(t *testing.T) {
+	root := t.TempDir()
+	layout := workspace.Layout{
+		TempRoot:           filepath.Join(root, "temp"),
+		DailyMarkdownRoot:  filepath.Join(root, "daily"),
+		WeeklyMarkdownRoot: filepath.Join(root, "weekly"),
+	}
+	cfg := config.Default()
+	cfg.DailyMarkdownRoot = layout.DailyMarkdownRoot
+	cfg.WeeklyMarkdownRoot = layout.WeeklyMarkdownRoot
+	cfg.WeeklySummaryMinWords = 50
+	if err := os.MkdirAll(layout.DailyMarkdownRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(layout.SummaryPath("2026-03-09"), []byte(validDaily), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := Service{Config: cfg, Layout: layout, Runner: &fakeRunner{markdown: validWeekly}}
+	result, err := svc.FinalizeWeek(context.Background(), "2026-W11", mustDate("2026-03-09"), mustDate("2026-03-15"), FinalizeOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("FinalizeWeek() error = %v", err)
+	}
+	if !strings.Contains(result.SummaryPath, "dry-run") {
+		t.Fatalf("expected dry-run path, got %s", result.SummaryPath)
 	}
 }
 
@@ -83,7 +113,7 @@ No meetings.
 Implemented weekly support.
 ## Open Threads
 Need verification.
-## Suggested Manager Update
+## Manager Email Draft
 Built the weekly flow.
 ## Work Type Time Breakdown
 | Category | Estimated Time | Samples |

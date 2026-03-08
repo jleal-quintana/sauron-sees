@@ -47,5 +47,5 @@ func run() int {
 
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "usage: sauron-sees [--config path] <command> [args]\n")
-	fmt.Fprintf(os.Stderr, "commands: agent, close-day, weekly-summary, capture-now, doctor, install-startup, uninstall-startup\n")
+	fmt.Fprintf(os.Stderr, "commands: agent, close-day, weekly-summary, capture-now, doctor, status, pause, resume, install-startup, uninstall-startup\n")
 }

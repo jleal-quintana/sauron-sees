@@ -22,6 +22,7 @@ func Doctor(cfg config.Config, runner codex.Runner) []CheckResult {
 		checkWritableDir("weekly markdown root", cfg.WeeklyMarkdownRoot),
 		checkEnsureDir("temp root", cfg.TempRoot),
 	}
+	results = append(results, windowsChecks()...)
 	if cfg.GranolaEnabled {
 		results = append(results, check(fmt.Sprintf("granola MCP (%s)", cfg.GranolaMCPServerName), func() error {
 			return runner.CheckMCPServer(cfg.GranolaMCPServerName)
