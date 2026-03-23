@@ -1,14 +1,15 @@
 package config
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
-
-	toml "github.com/pelletier/go-toml/v2"
 )
 
 type Config struct {
@@ -113,7 +114,7 @@ func Load(explicitPath string) (Config, string, error) {
 		return Config{}, "", fmt.Errorf("read config: %w", err)
 	}
 
-	if err := toml.Unmarshal(data, &cfg); err != nil {
+	if err := parseConfig(data, &cfg); err != nil {
 		return Config{}, "", fmt.Errorf("parse config: %w", err)
 	}
 	cfg.expandPaths()
@@ -215,4 +216,309 @@ func (c *Config) expandPaths() {
 	c.DailyMarkdownRoot = ExpandPath(c.DailyMarkdownRoot)
 	c.WeeklyMarkdownRoot = ExpandPath(c.WeeklyMarkdownRoot)
 	c.PromptOverridePath = ExpandPath(c.PromptOverridePath)
+}
+
+func parseConfig(data []byte, cfg *Config) error {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	section := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = stripInlineComment(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			return fmt.Errorf("invalid line %q", line)
+		}
+		fullKey := strings.TrimSpace(key)
+		if section != "" {
+			fullKey = section + "." + fullKey
+		}
+		if err := assignConfigValue(cfg, fullKey, strings.TrimSpace(value)); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func assignConfigValue(cfg *Config, key string, raw string) error {
+	switch key {
+	case "timezone":
+		value, err := parseStringValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.Timezone = value
+	case "capture_interval_minutes":
+		value, err := parseIntValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.CaptureIntervalMinutes = value
+	case "workdays":
+		value, err := parseStringArrayValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.Workdays = value
+	case "work_start":
+		value, err := parseStringValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WorkStart = value
+	case "work_end":
+		value, err := parseStringValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WorkEnd = value
+	case "close_day_time":
+		value, err := parseStringValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.CloseDayTime = value
+	case "temp_root":
+		value, err := parseStringValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.TempRoot = value
+	case "daily_markdown_root":
+		value, err := parseStringValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.DailyMarkdownRoot = value
+	case "weekly_markdown_root":
+		value, err := parseStringValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WeeklyMarkdownRoot = value
+	case "codex_profile":
+		value, err := parseStringValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.CodexProfile = value
+	case "prompt_override_path":
+		value, err := parseStringValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.PromptOverridePath = value
+	case "granola_enabled":
+		value, err := parseBoolValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.GranolaEnabled = value
+	case "granola_mcp_server_name":
+		value, err := parseStringValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.GranolaMCPServerName = value
+	case "tray_enabled":
+		value, err := parseBoolValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.TrayEnabled = value
+	case "weekly_auto_enabled":
+		value, err := parseBoolValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WeeklyAutoEnabled = value
+	case "weekly_close_day":
+		value, err := parseStringValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WeeklyCloseDay = value
+	case "weekly_close_time":
+		value, err := parseStringValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WeeklyCloseTime = value
+	case "jpeg_quality":
+		value, err := parseIntValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.JPEGQuality = value
+	case "image_max_dimension":
+		value, err := parseIntValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.ImageMaxDimension = value
+	case "delete_after_success":
+		value, err := parseBoolValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.DeleteAfterSuccess = value
+	case "daily_summary_min_words":
+		value, err := parseIntValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.DailySummaryMinWords = value
+	case "weekly_summary_min_words":
+		value, err := parseIntValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WeeklySummaryMinWords = value
+	case "logging.max_size_mb":
+		value, err := parseIntValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.Logging.MaxSizeMB = value
+	case "logging.max_backups":
+		value, err := parseIntValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.Logging.MaxBackups = value
+	case "logging.max_age_days":
+		value, err := parseIntValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.Logging.MaxAgeDays = value
+	case "work_classification.advisory_hints_enabled":
+		value, err := parseBoolValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WorkClassification.AdvisoryHintsEnabled = value
+	case "work_classification.include_apps":
+		value, err := parseStringArrayValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WorkClassification.IncludeApps = value
+	case "work_classification.exclude_apps":
+		value, err := parseStringArrayValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WorkClassification.ExcludeApps = value
+	case "work_classification.include_titles":
+		value, err := parseStringArrayValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WorkClassification.IncludeTitles = value
+	case "work_classification.exclude_titles":
+		value, err := parseStringArrayValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WorkClassification.ExcludeTitles = value
+	case "work_classification.include_domains":
+		value, err := parseStringArrayValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WorkClassification.IncludeDomains = value
+	case "work_classification.exclude_domains":
+		value, err := parseStringArrayValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WorkClassification.ExcludeDomains = value
+	case "work_classification.notes":
+		value, err := parseStringArrayValue(raw)
+		if err != nil {
+			return err
+		}
+		cfg.WorkClassification.Notes = value
+	default:
+		return fmt.Errorf("unknown config key %q", key)
+	}
+	return nil
+}
+
+func stripInlineComment(line string) string {
+	inString := false
+	for i := 0; i < len(line); i++ {
+		if line[i] == '"' && (i == 0 || line[i-1] != '\\') {
+			inString = !inString
+		}
+		if !inString && line[i] == '#' {
+			return strings.TrimSpace(line[:i])
+		}
+	}
+	return line
+}
+
+func parseStringValue(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return "", fmt.Errorf("invalid string value %q", raw)
+	}
+	unquoted, err := strconv.Unquote(value)
+	if err != nil {
+		return "", fmt.Errorf("invalid string value %q", raw)
+	}
+	return unquoted, nil
+}
+
+func parseIntValue(raw string) (int, error) {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("invalid int value %q", raw)
+	}
+	return value, nil
+}
+
+func parseBoolValue(raw string) (bool, error) {
+	value, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return false, fmt.Errorf("invalid bool value %q", raw)
+	}
+	return value, nil
+}
+
+func parseStringArrayValue(raw string) ([]string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "[]" {
+		return []string{}, nil
+	}
+	if !strings.HasPrefix(value, "[") || !strings.HasSuffix(value, "]") {
+		return nil, fmt.Errorf("invalid array value %q", raw)
+	}
+	value = strings.TrimSpace(value[1 : len(value)-1])
+	if value == "" {
+		return []string{}, nil
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		item, err := parseStringValue(strings.TrimSpace(part))
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, nil
 }

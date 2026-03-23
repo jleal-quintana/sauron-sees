@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"syscall"
 	"unsafe"
-
-	"golang.org/x/sys/windows"
 )
 
 type Options struct {
@@ -50,9 +48,9 @@ const (
 )
 
 var (
-	user32                  = windows.NewLazySystemDLL("user32.dll")
-	shell32                 = windows.NewLazySystemDLL("shell32.dll")
-	kernel32                = windows.NewLazySystemDLL("kernel32.dll")
+	user32                  = syscall.NewLazyDLL("user32.dll")
+	shell32                 = syscall.NewLazyDLL("shell32.dll")
+	kernel32                = syscall.NewLazyDLL("kernel32.dll")
 	procRegisterClassExW    = user32.NewProc("RegisterClassExW")
 	procCreateWindowExW     = user32.NewProc("CreateWindowExW")
 	procDefWindowProcW      = user32.NewProc("DefWindowProcW")
@@ -93,22 +91,22 @@ type wndClassEx struct {
 	WndProc    uintptr
 	ClsExtra   int32
 	WndExtra   int32
-	Instance   windows.Handle
-	Icon       windows.Handle
-	Cursor     windows.Handle
-	Background windows.Handle
+	Instance   syscall.Handle
+	Icon       syscall.Handle
+	Cursor     syscall.Handle
+	Background syscall.Handle
 	MenuName   *uint16
 	ClassName  *uint16
-	IconSm     windows.Handle
+	IconSm     syscall.Handle
 }
 
 type notifyIconData struct {
 	CbSize           uint32
-	HWnd             windows.Handle
+	HWnd             syscall.Handle
 	UID              uint32
 	UFlags           uint32
 	UCallbackMessage uint32
-	HIcon            windows.Handle
+	HIcon            syscall.Handle
 	SzTip            [128]uint16
 }
 
@@ -136,20 +134,20 @@ func runLoop(options Options) error {
 	if instance == 0 {
 		return fmt.Errorf("get module handle: %v", err)
 	}
-	className, _ := windows.UTF16PtrFromString("SauronSeesTrayWindow")
+	className, _ := syscall.UTF16PtrFromString("SauronSeesTrayWindow")
 	icon, _, _ := procLoadIconW.Call(0, 32512)
 	wndProc := syscall.NewCallback(windowProc)
 	class := wndClassEx{
 		Size:      uint32(unsafe.Sizeof(wndClassEx{})),
 		WndProc:   wndProc,
-		Instance:  windows.Handle(instance),
-		Icon:      windows.Handle(icon),
+		Instance:  syscall.Handle(instance),
+		Icon:      syscall.Handle(icon),
 		ClassName: className,
 	}
 	if atom, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&class))); atom == 0 {
 		return fmt.Errorf("register tray class: %v", err)
 	}
-	title, _ := windows.UTF16PtrFromString("Sauron Sees")
+	title, _ := syscall.UTF16PtrFromString("Sauron Sees")
 	hwnd, _, err := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(title)), 0, 0, 0, 0, 0, 0, 0, instance, 0)
 	if hwnd == 0 {
 		return fmt.Errorf("create tray window: %v", err)
@@ -174,13 +172,13 @@ func runLoop(options Options) error {
 func addTrayIcon(hwnd uintptr, tooltip string) error {
 	var data notifyIconData
 	data.CbSize = uint32(unsafe.Sizeof(data))
-	data.HWnd = windows.Handle(hwnd)
+	data.HWnd = syscall.Handle(hwnd)
 	data.UID = 1
 	data.UFlags = nifMessage | nifIcon | nifTip
 	data.UCallbackMessage = wmTrayIcon
 	icon, _, _ := procLoadIconW.Call(0, 32512)
-	data.HIcon = windows.Handle(icon)
-	copy(data.SzTip[:], windows.StringToUTF16(tooltip))
+	data.HIcon = syscall.Handle(icon)
+	copy(data.SzTip[:], syscall.StringToUTF16(tooltip))
 	ret, _, _ := procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&data)))
 	if ret == 0 {
 		return fmt.Errorf("Shell_NotifyIconW add failed")
@@ -191,7 +189,7 @@ func addTrayIcon(hwnd uintptr, tooltip string) error {
 func deleteTrayIcon(hwnd uintptr) {
 	var data notifyIconData
 	data.CbSize = uint32(unsafe.Sizeof(data))
-	data.HWnd = windows.Handle(hwnd)
+	data.HWnd = syscall.Handle(hwnd)
 	data.UID = 1
 	procShellNotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&data)))
 }
@@ -276,6 +274,6 @@ func showMenu(hwnd uintptr) {
 }
 
 func appendMenu(menu uintptr, id uint32, label string) {
-	text, _ := windows.UTF16PtrFromString(label)
+	text, _ := syscall.UTF16PtrFromString(label)
 	procAppendMenuW.Call(menu, 0, uintptr(id), uintptr(unsafe.Pointer(text)))
 }

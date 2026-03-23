@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -16,8 +17,6 @@ import (
 	"sauron-sees/internal/state"
 	"sauron-sees/internal/tray"
 	"sauron-sees/internal/weeklysummary"
-
-	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 type logger struct {
@@ -35,6 +34,9 @@ func (l *logger) Close() error {
 }
 
 func (r *runtimeEnv) runAgent(ctx context.Context) error {
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+
 	results := dailysummary.Doctor(r.cfg, r.runner)
 	if dailysummary.HasBlockingIssue(results) {
 		for _, result := range results {
@@ -45,36 +47,57 @@ func (r *runtimeEnv) runAgent(ctx context.Context) error {
 
 	if r.trayEnabled {
 		go func() {
-			if err := tray.Start(ctx, r.trayOptions(ctx)); err != nil {
+			if err := tray.Start(ctx, r.trayOptions(ctx, stop)); err != nil {
 				r.logger.Printf("tray error: %v", err)
 			}
 		}()
 	}
 
 	now := time.Now()
+	if err := r.reloadState(); err != nil {
+		return err
+	}
 	if err := r.closePendingDays(ctx, r.currentDay(now)); err != nil {
 		r.logger.Printf("pending close error: %v", err)
 	}
 	if err := r.closePendingWeeks(ctx, r.planner.WeekKey(now)); err != nil {
 		r.logger.Printf("pending weekly close error: %v", err)
 	}
+	if err := r.tick(ctx, now); err != nil {
+		r.logger.Printf("agent tick error: %v", err)
+	}
 
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	workTicker := time.NewTicker(30 * time.Second)
+	controlTicker := time.NewTicker(time.Second)
+	defer workTicker.Stop()
+	defer controlTicker.Stop()
 	for {
-		if err := r.tick(ctx, time.Now()); err != nil {
-			r.logger.Printf("agent tick error: %v", err)
-		}
 		select {
 		case <-ctx.Done():
 			r.logger.Printf("agent stopping")
 			return nil
-		case <-ticker.C:
+		case <-controlTicker.C:
+			stopRequested, err := r.agentMgr.StopRequested()
+			if err != nil {
+				r.logger.Printf("stop request check failed: %v", err)
+				continue
+			}
+			if stopRequested {
+				r.logger.Printf("agent stopping on stop request")
+				stop()
+			}
+		case <-workTicker.C:
+			if err := r.tick(ctx, time.Now()); err != nil {
+				r.logger.Printf("agent tick error: %v", err)
+			}
 		}
 	}
 }
 
 func (r *runtimeEnv) tick(ctx context.Context, now time.Time) error {
+	if err := r.reloadState(); err != nil {
+		return err
+	}
 	today := r.currentDay(now)
 	if err := r.closePendingDays(ctx, today); err != nil {
 		return err
@@ -116,6 +139,9 @@ func (r *runtimeEnv) captureNow(now time.Time) error {
 }
 
 func (r *runtimeEnv) captureAt(now time.Time, day string) error {
+	if err := r.reloadState(); err != nil {
+		return err
+	}
 	ds := r.state.EnsureDay(day)
 	if ds.Status != state.StatusOpen {
 		return fmt.Errorf("day %s is sealed or closed; cannot capture", day)
@@ -124,8 +150,10 @@ func (r *runtimeEnv) captureAt(now time.Time, day string) error {
 	if err != nil {
 		return err
 	}
-	r.state.MarkCapture(day, now)
-	if err := r.saveState(); err != nil {
+	if err := r.updateState(func(st *state.FileState) error {
+		st.MarkCapture(day, now)
+		return nil
+	}); err != nil {
 		return err
 	}
 	r.logger.Printf("captured %s for %s (%s)", record.ImagePath, day, record.ActiveProcess)
@@ -157,21 +185,27 @@ func (r *runtimeEnv) closePendingWeeks(ctx context.Context, currentWeek string) 
 }
 
 func (r *runtimeEnv) closeDay(ctx context.Context, day string, dryRun bool) error {
+	if err := r.reloadState(); err != nil {
+		return err
+	}
 	if ds := r.state.EnsureDay(day); ds.Status == state.StatusClosed && !dryRun {
 		r.logger.Printf("day %s already closed", day)
 		return nil
 	}
 	if !dryRun {
-		r.state.Seal(day)
-		r.state.MarkClosingAttempt(day, time.Now())
-		if err := r.saveState(); err != nil {
+		attemptNow := time.Now()
+		if err := r.updateState(func(st *state.FileState) error {
+			st.Seal(day)
+			st.MarkClosingAttempt(day, attemptNow)
+			return nil
+		}); err != nil {
 			return err
 		}
 	}
 
 	result, err := r.summaries.FinalizeDay(ctx, day, dailysummary.FinalizeOptions{DryRun: dryRun})
 	record := state.AttemptRecord{
-		AttemptAt:        time.Now().UTC().Format(time.RFC3339),
+		AttemptAt:        r.formatTime(time.Now()),
 		Mode:             ternary(dryRun, "dry-run", "normal"),
 		GeneratedPath:    result.SummaryPath,
 		VerificationPath: result.VerificationPath,
@@ -181,38 +215,48 @@ func (r *runtimeEnv) closeDay(ctx context.Context, day string, dryRun bool) erro
 	}
 	if err != nil {
 		record.ErrorMessage = err.Error()
-		r.state.MarkDayAttempt(day, record, dryRun)
-		if !dryRun {
-			r.state.MarkFailed(day, err)
-		}
-		_ = r.saveState()
+		_ = r.updateState(func(st *state.FileState) error {
+			st.MarkDayAttempt(day, record, dryRun)
+			if !dryRun {
+				st.MarkFailed(day, err)
+			}
+			return nil
+		})
 		return fmt.Errorf("finalize day %s: %w", day, err)
 	}
-	r.state.MarkDayAttempt(day, record, dryRun)
-	if dryRun {
-		if err := r.saveState(); err != nil {
-			return err
+	if err := r.updateState(func(st *state.FileState) error {
+		st.MarkDayAttempt(day, record, dryRun)
+		if !dryRun {
+			st.MarkClosed(day, result.SummaryPath)
 		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if dryRun {
 		r.logger.Printf("dry-run day %s wrote preview to %s", day, result.SummaryPath)
 		return nil
-	}
-	r.state.MarkClosed(day, result.SummaryPath)
-	if err := r.saveState(); err != nil {
-		return err
 	}
 	r.logger.Printf("closed day %s into %s", day, result.SummaryPath)
 	weekKey, err := r.planner.WeekKeyForDate(day)
 	if err == nil {
-		if ws := r.state.EnsureWeek(weekKey); r.planner.ShouldAutoCloseWeek(time.Now(), weekKey, ws.Status == state.StatusClosed) {
-			if err := r.closeWeek(ctx, weekKey, false); err != nil {
-				r.logger.Printf("weekly close after day close failed for %s: %v", weekKey, err)
+		if err := r.reloadState(); err == nil {
+			if ws := r.state.EnsureWeek(weekKey); r.planner.ShouldAutoCloseWeek(time.Now(), weekKey, ws.Status == state.StatusClosed) {
+				if err := r.closeWeek(ctx, weekKey, false); err != nil {
+					r.logger.Printf("weekly close after day close failed for %s: %v", weekKey, err)
+				}
 			}
+		} else {
+			r.logger.Printf("reload state after day close failed: %v", err)
 		}
 	}
 	return nil
 }
 
 func (r *runtimeEnv) closeWeek(ctx context.Context, weekKey string, dryRun bool) error {
+	if err := r.reloadState(); err != nil {
+		return err
+	}
 	ws := r.state.EnsureWeek(weekKey)
 	if ws.Status == state.StatusClosed && !dryRun {
 		r.logger.Printf("week %s already closed", weekKey)
@@ -223,14 +267,17 @@ func (r *runtimeEnv) closeWeek(ctx context.Context, weekKey string, dryRun bool)
 		return err
 	}
 	if !dryRun {
-		r.state.MarkWeekClosingAttempt(weekKey, time.Now())
-		if err := r.saveState(); err != nil {
+		attemptNow := time.Now()
+		if err := r.updateState(func(st *state.FileState) error {
+			st.MarkWeekClosingAttempt(weekKey, attemptNow)
+			return nil
+		}); err != nil {
 			return err
 		}
 	}
 	result, err := r.weekly.FinalizeWeek(ctx, weekKey, start, end, weeklysummary.FinalizeOptions{DryRun: dryRun})
 	record := state.AttemptRecord{
-		AttemptAt:        time.Now().UTC().Format(time.RFC3339),
+		AttemptAt:        r.formatTime(time.Now()),
 		Mode:             ternary(dryRun, "dry-run", "normal"),
 		GeneratedPath:    result.SummaryPath,
 		VerificationPath: result.VerificationPath,
@@ -240,24 +287,27 @@ func (r *runtimeEnv) closeWeek(ctx context.Context, weekKey string, dryRun bool)
 	}
 	if err != nil {
 		record.ErrorMessage = err.Error()
-		r.state.MarkWeekAttempt(weekKey, record, dryRun)
-		if !dryRun {
-			r.state.MarkWeekFailed(weekKey, err)
-		}
-		_ = r.saveState()
+		_ = r.updateState(func(st *state.FileState) error {
+			st.MarkWeekAttempt(weekKey, record, dryRun)
+			if !dryRun {
+				st.MarkWeekFailed(weekKey, err)
+			}
+			return nil
+		})
 		return fmt.Errorf("finalize week %s: %w", weekKey, err)
 	}
-	r.state.MarkWeekAttempt(weekKey, record, dryRun)
-	if dryRun {
-		if err := r.saveState(); err != nil {
-			return err
+	if err := r.updateState(func(st *state.FileState) error {
+		st.MarkWeekAttempt(weekKey, record, dryRun)
+		if !dryRun {
+			st.MarkWeekClosed(weekKey, result.SummaryPath)
 		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if dryRun {
 		r.logger.Printf("dry-run week %s wrote preview to %s", weekKey, result.SummaryPath)
 		return nil
-	}
-	r.state.MarkWeekClosed(weekKey, result.SummaryPath)
-	if err := r.saveState(); err != nil {
-		return err
 	}
 	r.logger.Printf("closed week %s into %s", weekKey, result.SummaryPath)
 	return nil
@@ -277,14 +327,17 @@ func (r *runtimeEnv) closeWeekRange(ctx context.Context, from string, to string,
 	}
 	weekKey := fmt.Sprintf("%s_to_%s", start.Format("2006-01-02"), end.Format("2006-01-02"))
 	if !dryRun {
-		r.state.MarkWeekClosingAttempt(weekKey, time.Now())
-		if err := r.saveState(); err != nil {
+		attemptNow := time.Now()
+		if err := r.updateState(func(st *state.FileState) error {
+			st.MarkWeekClosingAttempt(weekKey, attemptNow)
+			return nil
+		}); err != nil {
 			return err
 		}
 	}
 	result, err := r.weekly.FinalizeWeek(ctx, weekKey, start, end, weeklysummary.FinalizeOptions{DryRun: dryRun})
 	record := state.AttemptRecord{
-		AttemptAt:        time.Now().UTC().Format(time.RFC3339),
+		AttemptAt:        r.formatTime(time.Now()),
 		Mode:             ternary(dryRun, "dry-run", "normal"),
 		GeneratedPath:    result.SummaryPath,
 		VerificationPath: result.VerificationPath,
@@ -294,50 +347,67 @@ func (r *runtimeEnv) closeWeekRange(ctx context.Context, from string, to string,
 	}
 	if err != nil {
 		record.ErrorMessage = err.Error()
-		r.state.MarkWeekAttempt(weekKey, record, dryRun)
-		if !dryRun {
-			r.state.MarkWeekFailed(weekKey, err)
-		}
-		_ = r.saveState()
+		_ = r.updateState(func(st *state.FileState) error {
+			st.MarkWeekAttempt(weekKey, record, dryRun)
+			if !dryRun {
+				st.MarkWeekFailed(weekKey, err)
+			}
+			return nil
+		})
 		return err
 	}
-	r.state.MarkWeekAttempt(weekKey, record, dryRun)
-	if !dryRun {
-		r.state.MarkWeekClosed(weekKey, result.SummaryPath)
-	}
-	return r.saveState()
+	return r.updateState(func(st *state.FileState) error {
+		st.MarkWeekAttempt(weekKey, record, dryRun)
+		if !dryRun {
+			st.MarkWeekClosed(weekKey, result.SummaryPath)
+		}
+		return nil
+	})
 }
 
 func (r *runtimeEnv) pause(duration time.Duration) error {
 	until := time.Now().Add(duration)
-	r.state.SetPausedUntil(until)
-	r.logger.Printf("paused until %s", until.Format(time.RFC3339))
-	return r.saveState()
+	if err := r.updateState(func(st *state.FileState) error {
+		st.SetPausedUntil(until)
+		return nil
+	}); err != nil {
+		return err
+	}
+	r.logger.Printf("paused until %s", r.formatTime(until))
+	return nil
 }
 
 func (r *runtimeEnv) resume() error {
-	r.state.ClearPause()
+	if err := r.updateState(func(st *state.FileState) error {
+		st.ClearPause()
+		return nil
+	}); err != nil {
+		return err
+	}
 	r.logger.Printf("resumed")
-	return r.saveState()
+	return nil
 }
 
-func (r *runtimeEnv) statusString(now time.Time) string {
+func (r *runtimeEnv) statusString(now time.Time) (string, error) {
+	if err := r.reloadState(); err != nil {
+		return "", err
+	}
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Current day: %s\n", r.currentDay(now))
 	fmt.Fprintf(&builder, "Current ISO week: %s\n", r.planner.WeekKey(now))
 	if r.state.Paused(now) {
-		fmt.Fprintf(&builder, "Paused: yes until %s\n", r.state.PausedUntilTime().Local().Format(time.RFC3339))
+		fmt.Fprintf(&builder, "Paused: yes until %s\n", r.formatTime(r.state.PausedUntilTime()))
 	} else {
 		fmt.Fprintf(&builder, "Paused: no\n")
 	}
 	if next := r.planner.NextCaptureAfter(now); !next.IsZero() {
-		fmt.Fprintf(&builder, "Next scheduled capture: %s\n", next.Format(time.RFC3339))
+		fmt.Fprintf(&builder, "Next scheduled capture: %s\n", r.formatTime(next))
 	}
 	if next := r.planner.NextDailyCloseAfter(now); !next.IsZero() {
-		fmt.Fprintf(&builder, "Next scheduled daily close: %s\n", next.Format(time.RFC3339))
+		fmt.Fprintf(&builder, "Next scheduled daily close: %s\n", r.formatTime(next))
 	}
 	if next := r.planner.NextWeeklyCloseAfter(now); !next.IsZero() {
-		fmt.Fprintf(&builder, "Next scheduled weekly close: %s\n", next.Format(time.RFC3339))
+		fmt.Fprintf(&builder, "Next scheduled weekly close: %s\n", r.formatTime(next))
 	}
 	fmt.Fprintf(&builder, "Last successful daily summary: %s\n", blankFallback(r.state.LastSuccessfulClose, "none"))
 	lastWeekly := "none"
@@ -363,7 +433,7 @@ func (r *runtimeEnv) statusString(now time.Time) string {
 	} else {
 		fmt.Fprintf(&builder, "Pending failures: %s\n", strings.Join(pending, ", "))
 	}
-	return builder.String()
+	return builder.String(), nil
 }
 
 func blankFallback(value string, fallback string) string {
@@ -392,11 +462,6 @@ func openFolder(path string) error {
 }
 
 func openLogSink(path string, loggingCfg config.LoggingConfig) (io.WriteCloser, error) {
-	return &lumberjack.Logger{
-		Filename:   path,
-		MaxSize:    loggingCfg.MaxSizeMB,
-		MaxBackups: loggingCfg.MaxBackups,
-		MaxAge:     loggingCfg.MaxAgeDays,
-		LocalTime:  true,
-	}, nil
+	_ = loggingCfg
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 }

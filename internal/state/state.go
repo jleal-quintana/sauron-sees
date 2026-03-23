@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"sauron-sees/internal/filelock"
 )
 
 const (
@@ -66,7 +68,28 @@ type AttemptRecord struct {
 	ErrorMessage     string `json:"error_message,omitempty"`
 }
 
+type Store struct {
+	path string
+}
+
+func NewStore(path string) Store {
+	return Store{path: path}
+}
+
 func Load(path string) (*FileState, error) {
+	return NewStore(path).Load()
+}
+
+func (s Store) Load() (*FileState, error) {
+	guard, err := filelock.Lock(s.lockPath())
+	if err != nil {
+		return nil, fmt.Errorf("lock state: %w", err)
+	}
+	defer guard.Close()
+	return loadUnlocked(s.path)
+}
+
+func loadUnlocked(path string) (*FileState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -88,14 +111,77 @@ func Load(path string) (*FileState, error) {
 }
 
 func (s *FileState) Save(path string) error {
+	return NewStore(path).Save(s)
+}
+
+func (s Store) Save(st *FileState) error {
+	guard, err := filelock.Lock(s.lockPath())
+	if err != nil {
+		return fmt.Errorf("lock state: %w", err)
+	}
+	defer guard.Close()
+	return saveUnlocked(s.path, st)
+}
+
+func (s Store) Update(fn func(*FileState) error) (*FileState, error) {
+	guard, err := filelock.Lock(s.lockPath())
+	if err != nil {
+		return nil, fmt.Errorf("lock state: %w", err)
+	}
+	defer guard.Close()
+
+	st, err := loadUnlocked(s.path)
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(st); err != nil {
+		return nil, err
+	}
+	if err := saveUnlocked(s.path, st); err != nil {
+		return nil, err
+	}
+	return st, nil
+}
+
+func saveUnlocked(path string, st *FileState) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir state dir: %w", err)
 	}
-	data, err := json.MarshalIndent(s, "", "  ")
+	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
-	return os.WriteFile(path, data, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp state: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("write temp state: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close temp state: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("chmod temp state: %w", err)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("remove old state: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("replace state: %w", err)
+	}
+	return nil
+}
+
+func (s Store) lockPath() string {
+	return s.path + ".lock"
 }
 
 func (s *FileState) EnsureDay(day string) *DayState {

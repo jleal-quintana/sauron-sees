@@ -10,8 +10,6 @@ import (
 	"strings"
 	"syscall"
 	"unsafe"
-
-	"golang.org/x/sys/windows"
 )
 
 const (
@@ -19,11 +17,12 @@ const (
 	desktopSwitchDesktop = 0x0100
 	udName               = 2
 	processQueryLimited  = 0x1000
+	maxPath              = 260
 )
 
 var (
-	user32                     = windows.NewLazySystemDLL("user32.dll")
-	kernel32                   = windows.NewLazySystemDLL("kernel32.dll")
+	user32                     = syscall.NewLazyDLL("user32.dll")
+	kernel32                   = syscall.NewLazyDLL("kernel32.dll")
 	procGetSystemMetrics       = user32.NewProc("GetSystemMetrics")
 	procGetForegroundWindow    = user32.NewProc("GetForegroundWindow")
 	procGetWindowTextW         = user32.NewProc("GetWindowTextW")
@@ -100,6 +99,14 @@ func (RealHost) DesktopMetadata() (DesktopMetadata, error) {
 	if err != nil {
 		return DesktopMetadata{}, err
 	}
+	if locked {
+		return DesktopMetadata{
+			MonitorCount:      monitorCount(),
+			ActiveWindowTitle: "",
+			ActiveProcess:     "",
+			SessionLocked:     true,
+		}, nil
+	}
 	title, pid, err := foregroundWindow()
 	if err != nil {
 		return DesktopMetadata{}, err
@@ -142,13 +149,13 @@ func processName(pid uint32) string {
 	if pid == 0 {
 		return ""
 	}
-	handle, err := windows.OpenProcess(processQueryLimited, false, pid)
+	handle, err := syscall.OpenProcess(processQueryLimited, false, pid)
 	if err != nil {
 		return ""
 	}
-	defer windows.CloseHandle(handle)
+	defer syscall.CloseHandle(handle)
 
-	buf := make([]uint16, windows.MAX_PATH)
+	buf := make([]uint16, maxPath)
 	size := uint32(len(buf))
 	r1, _, _ := procQueryFullProcessImage.Call(
 		uintptr(handle),
@@ -159,7 +166,7 @@ func processName(pid uint32) string {
 	if r1 == 0 {
 		return ""
 	}
-	return filepath.Base(windows.UTF16ToString(buf[:size]))
+	return filepath.Base(syscall.UTF16ToString(buf[:size]))
 }
 
 func sessionLocked() (bool, error) {
@@ -181,6 +188,6 @@ func sessionLocked() (bool, error) {
 	if r1 == 0 {
 		return false, callErr
 	}
-	name := windows.UTF16ToString(nameBuf)
+	name := syscall.UTF16ToString(nameBuf)
 	return !strings.EqualFold(name, "Default"), nil
 }

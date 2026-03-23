@@ -46,6 +46,10 @@ func (s Service) FinalizeDay(ctx context.Context, day string, options FinalizeOp
 	if err != nil {
 		return Result{}, err
 	}
+	location, err := time.LoadLocation(s.Config.Timezone)
+	if err != nil {
+		return Result{}, fmt.Errorf("load timezone: %w", err)
+	}
 	attempt := audit.New(mode(options.DryRun))
 	attempt.InputCount = len(records)
 
@@ -63,13 +67,13 @@ func (s Service) FinalizeDay(ctx context.Context, day string, options FinalizeOp
 		auditPath = filepath.Join(outputDir, "audit.json")
 	}
 
-	sheets, err := contactsheet.Build(day, sheetsDir, records)
+	sheets, err := contactsheet.Build(day, sheetsDir, records, location)
 	if err != nil {
 		attempt.ErrorMessage = err.Error()
 		_ = audit.Write(auditPath, attempt)
 		return Result{}, fmt.Errorf("build contact sheets: %w", err)
 	}
-	prompt, err := s.buildPrompt(day, records)
+	prompt, err := s.buildPrompt(day, records, location)
 	if err != nil {
 		attempt.ErrorMessage = err.Error()
 		_ = audit.Write(auditPath, attempt)
@@ -175,7 +179,7 @@ func (s Service) FinalizeDay(ctx context.Context, day string, options FinalizeOp
 	return result, nil
 }
 
-func (s Service) buildPrompt(day string, records []metadata.CaptureRecord) (string, error) {
+func (s Service) buildPrompt(day string, records []metadata.CaptureRecord, location *time.Location) (string, error) {
 	const outputContract = `Return exactly one Markdown document.
 Include YAML frontmatter with:
 - date
@@ -192,7 +196,7 @@ Then include these sections with these exact headings:
 ## Manager Email Draft
 ## Work Type Time Breakdown`
 
-	summary := summarizeMetadata(records, s.Config.CaptureIntervalMinutes)
+	summary := summarizeMetadata(records, s.Config.CaptureIntervalMinutes, location)
 	granola := "Granola MCP is disabled for this run."
 	if s.Config.GranolaEnabled {
 		granola = fmt.Sprintf(
@@ -253,15 +257,15 @@ func cleanupDayArtifacts(layout workspace.Layout, day string) error {
 	return nil
 }
 
-func summarizeMetadata(records []metadata.CaptureRecord, captureIntervalMinutes int) string {
+func summarizeMetadata(records []metadata.CaptureRecord, captureIntervalMinutes int, location *time.Location) string {
 	if len(records) == 0 {
 		return "No screenshots were captured for this day. If evidence is missing, say so explicitly."
 	}
 	processCounts := map[string]int{}
 	windowCounts := map[string]int{}
 	monitorCounts := map[int]int{}
-	first := records[0].Time()
-	last := records[len(records)-1].Time()
+	first := records[0].TimeIn(location)
+	last := records[len(records)-1].TimeIn(location)
 	for _, rec := range records {
 		processCounts[blankFallback(rec.ActiveProcess, "unknown")]++
 		windowCounts[blankFallback(rec.ActiveWindowTitle, "unknown")]++
@@ -270,11 +274,11 @@ func summarizeMetadata(records []metadata.CaptureRecord, captureIntervalMinutes 
 
 	lines := []string{
 		fmt.Sprintf("Captured %d screenshots at roughly %d-minute intervals.", len(records), captureIntervalMinutes),
-		fmt.Sprintf("First capture: %s UTC.", first.Format(time.RFC3339)),
-		fmt.Sprintf("Last capture: %s UTC.", last.Format(time.RFC3339)),
+		fmt.Sprintf("First capture: %s.", first.Format(time.RFC3339)),
+		fmt.Sprintf("Last capture: %s.", last.Format(time.RFC3339)),
 	}
 
-	hours := contactsheet.HourBuckets(records)
+	hours := contactsheet.HourBuckets(records, location)
 	hourKeys := make([]string, 0, len(hours))
 	for k := range hours {
 		hourKeys = append(hourKeys, k)

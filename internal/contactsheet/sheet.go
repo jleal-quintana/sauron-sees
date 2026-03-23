@@ -22,7 +22,7 @@ const (
 	cellHeight       = 450
 )
 
-func Build(day string, dir string, records []metadata.CaptureRecord) ([]string, error) {
+func Build(day string, dir string, records []metadata.CaptureRecord, location *time.Location) ([]string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir sheets dir: %w", err)
 	}
@@ -30,7 +30,7 @@ func Build(day string, dir string, records []metadata.CaptureRecord) ([]string, 
 	grouped := map[string][]metadata.CaptureRecord{}
 	var hours []string
 	for _, rec := range records {
-		ts := rec.Time()
+		ts := rec.TimeIn(location)
 		if ts.IsZero() {
 			continue
 		}
@@ -185,11 +185,11 @@ func minFloat(a, b float64) float64 {
 	return b
 }
 
-func HourBuckets(records []metadata.CaptureRecord) map[string]int {
+func HourBuckets(records []metadata.CaptureRecord, location *time.Location) map[string]int {
 	out := map[string]int{}
 	for _, rec := range records {
-		ts, err := time.Parse(time.RFC3339, rec.Timestamp)
-		if err != nil {
+		ts := rec.TimeIn(location)
+		if ts.IsZero() {
 			continue
 		}
 		out[ts.Format("15:00")]++

@@ -36,6 +36,14 @@ func (l Layout) StatePath() string {
 	return filepath.Join(l.TempRoot, "state.json")
 }
 
+func (l Layout) PIDPath() string {
+	return filepath.Join(l.TempRoot, "agent.pid")
+}
+
+func (l Layout) StopPath() string {
+	return filepath.Join(l.TempRoot, "agent.stop")
+}
+
 func (l Layout) LogPath() string {
 	return filepath.Join(l.TempRoot, "logs", "agent.log")
 }

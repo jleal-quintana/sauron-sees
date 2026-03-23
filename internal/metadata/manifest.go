@@ -23,6 +23,14 @@ func (r CaptureRecord) Time() time.Time {
 	return ts
 }
 
+func (r CaptureRecord) TimeIn(location *time.Location) time.Time {
+	ts := r.Time()
+	if ts.IsZero() || location == nil {
+		return ts
+	}
+	return ts.In(location)
+}
+
 func Append(path string, record CaptureRecord) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir manifest dir: %w", err)

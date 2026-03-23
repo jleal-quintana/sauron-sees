@@ -15,6 +15,7 @@ import (
 
 func TestBuildLimitsSheetsPerDay(t *testing.T) {
 	tempDir := t.TempDir()
+	loc := time.FixedZone("UTC-3", -3*60*60)
 	var records []metadata.CaptureRecord
 	for hour := 0; hour < 12; hour++ {
 		for idx := 0; idx < 2; idx++ {
@@ -28,12 +29,25 @@ func TestBuildLimitsSheetsPerDay(t *testing.T) {
 		}
 	}
 
-	sheets, err := Build("2026-03-09", filepath.Join(tempDir, "sheets"), records)
+	sheets, err := Build("2026-03-09", filepath.Join(tempDir, "sheets"), records, loc)
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
 	if got := len(sheets); got != 10 {
 		t.Fatalf("len(sheets) = %d, want 10", got)
+	}
+}
+
+func TestHourBucketsUsesConfiguredLocation(t *testing.T) {
+	loc := time.FixedZone("UTC-3", -3*60*60)
+	records := []metadata.CaptureRecord{
+		{Timestamp: time.Date(2026, 3, 9, 1, 15, 0, 0, time.UTC).Format(time.RFC3339)},
+		{Timestamp: time.Date(2026, 3, 9, 1, 45, 0, 0, time.UTC).Format(time.RFC3339)},
+	}
+
+	got := HourBuckets(records, loc)
+	if got["22:00"] != 2 {
+		t.Fatalf("HourBuckets() = %#v, want bucket 22:00 with 2 records", got)
 	}
 }
 

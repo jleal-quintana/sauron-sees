@@ -70,6 +70,10 @@ func (p *Planner) LocalDate(t time.Time) string {
 	return t.In(p.location).Format("2006-01-02")
 }
 
+func (p *Planner) Location() *time.Location {
+	return p.location
+}
+
 func (p *Planner) HasRolledOver(a, b time.Time) bool {
 	return p.LocalDate(a) != p.LocalDate(b)
 }
